@@ -156,6 +156,7 @@ reconfigure their proxies. Please read the Breaking Changes below thoroughly.
     - `-bitbucket-team` Restrict authorization to users that are part of this Bitbucket team
 - [#211](https://github.com/pusher/oauth2_proxy/pull/211) Switch from dep to go modules (@steakunderscore)
 - [#145](https://github.com/pusher/oauth2_proxy/pull/145) Add support for OIDC UserInfo endpoint email verification (@rtluckie)
+- [#204](https://github.com/pusher/oauth2_proxy/pull/204) Add subdomain-based routing. It is now possible to route based on domain name and path.
 
 # v3.2.0
 

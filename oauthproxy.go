@@ -79,32 +79,32 @@ type OAuthProxy struct {
 	AuthOnlyPath      string
 	UserInfoPath      string
 
-	redirectURL          *url.URL // the url to receive requests at
-	whitelistDomains     []string
-	provider             providers.Provider
+	redirectURL         *url.URL // the url to receive requests at
+	whitelistDomains    []string
+	provider            providers.Provider
 	providerNameOverride string
-	sessionStore         sessionsapi.SessionStore
-	ProxyPrefix          string
-	SignInMessage        string
-	HtpasswdFile         *HtpasswdFile
-	DisplayHtpasswdForm  bool
-	serveMux             http.Handler
-	SetXAuthRequest      bool
-	PassBasicAuth        bool
-	SkipProviderButton   bool
-	PassUserHeaders      bool
-	BasicAuthPassword    string
-	PassAccessToken      bool
-	SetAuthorization     bool
-	PassAuthorization    bool
-	skipAuthRegex        []string
-	skipAuthPreflight    bool
-	skipJwtBearerTokens  bool
-	jwtBearerVerifiers   []*oidc.IDTokenVerifier
-	compiledRegex        []*regexp.Regexp
-	templates            *template.Template
-	Banner               string
-	Footer               string
+	sessionStore        sessionsapi.SessionStore
+	ProxyPrefix         string
+	SignInMessage       string
+	HtpasswdFile        *HtpasswdFile
+	DisplayHtpasswdForm bool
+	serveMuxes          map[string]http.Handler
+	SetXAuthRequest     bool
+	PassBasicAuth       bool
+	SkipProviderButton  bool
+	PassUserHeaders     bool
+	BasicAuthPassword   string
+	PassAccessToken     bool
+	SetAuthorization    bool
+	PassAuthorization   bool
+	skipAuthRegex       []string
+	skipAuthPreflight   bool
+	skipJwtBearerTokens bool
+	jwtBearerVerifiers  []*oidc.IDTokenVerifier
+	compiledRegex       []*regexp.Regexp
+	templates           *template.Template
+	Banner              string
+	Footer              string
 }
 
 // UpstreamProxy represents an upstream server to proxy to
@@ -197,20 +197,30 @@ func NewWebSocketOrRestReverseProxy(u *url.URL, opts *Options, auth hmacauth.Hma
 
 // NewOAuthProxy creates a new instance of OOuthProxy from the options provided
 func NewOAuthProxy(opts *Options, validator func(string) bool) *OAuthProxy {
-	serveMux := http.NewServeMux()
+	serveMuxes := map[string]http.Handler{}
 	var auth hmacauth.HmacAuth
 	if sigData := opts.signatureData; sigData != nil {
 		auth = hmacauth.NewHmacAuth(sigData.hash, []byte(sigData.key),
 			SignatureHeader, SignatureHeaders)
 	}
-	for _, u := range opts.proxyURLs {
-		path := u.Path
+	for host, urls := range opts.proxyURLs {
+		if host != "*" && strings.HasPrefix(opts.CookieDomain, ".") && !strings.HasSuffix(host, opts.CookieDomain) {
+			if host == "" {
+				host = opts.CookieDomain[1:]
+			} else {
+				host = host + opts.CookieDomain
+			}
+		}
+		serveMux := http.NewServeMux()
+		serveMuxes[host] = serveMux
+		for _, u := range urls {
+			path := u.Path
 		host := u.Host
-		switch u.Scheme {
-		case httpScheme, httpsScheme:
-			logger.Printf("mapping path %q => upstream %q", path, u)
-			proxy := NewWebSocketOrRestReverseProxy(u, opts, auth)
-			serveMux.Handle(path, proxy)
+			switch u.Scheme {
+			case httpScheme, httpsScheme:
+				logger.Printf("mapping path %q for %q => upstream %q", path, host, u)
+				proxy := NewWebSocketOrRestReverseProxy(u, opts, auth)
+				serveMux.Handle(path, proxy)
 		case "static":
 			responseCode, err := strconv.Atoi(host)
 			if err != nil {
@@ -222,21 +232,22 @@ func NewOAuthProxy(opts *Options, validator func(string) bool) *OAuthProxy {
 				rw.WriteHeader(responseCode)
 				fmt.Fprintf(rw, "Authenticated")
 			})
-		case "file":
-			if u.Fragment != "" {
-				path = u.Fragment
+			case "file":
+				if u.Fragment != "" {
+					path = u.Fragment
+				}
+				logger.Printf("mapping path %q => file system %q", path, u.Path)
+				proxy := NewFileServer(path, u.Path)
+				uProxy := UpstreamProxy{
+					upstream:  path,
+					handler:   proxy,
+					wsHandler: nil,
+					auth:      nil,
+				}
+				serveMux.Handle(path, &uProxy)
+			default:
+				panic(fmt.Sprintf("unknown upstream protocol %s", u.Scheme))
 			}
-			logger.Printf("mapping path %q => file system %q", path, u.Path)
-			proxy := NewFileServer(path, u.Path)
-			uProxy := UpstreamProxy{
-				upstream:  path,
-				handler:   proxy,
-				wsHandler: nil,
-				auth:      nil,
-			}
-			serveMux.Handle(path, &uProxy)
-		default:
-			panic(fmt.Sprintf("unknown upstream protocol %s", u.Scheme))
 		}
 	}
 	for _, u := range opts.CompiledRegex {
@@ -258,6 +269,12 @@ func NewOAuthProxy(opts *Options, validator func(string) bool) *OAuthProxy {
 	refresh := "disabled"
 	if opts.CookieRefresh != time.Duration(0) {
 		refresh = fmt.Sprintf("after %s", opts.CookieRefresh)
+	}
+
+	whitelistDomains := opts.WhitelistDomains
+	if len(serveMuxes) >= 2 && len(whitelistDomains) == 0 && opts.CookieDomain != "" {
+		// by default the cookie-domain is allowed
+		whitelistDomains = append(whitelistDomains, opts.CookieDomain)
 	}
 
 	logger.Printf("Cookie settings: name:%s secure(https):%v httponly:%v expiry:%s domain:%s path:%s refresh:%s", opts.CookieName, opts.CookieSecure, opts.CookieHTTPOnly, opts.CookieExpire, opts.CookieDomain, opts.CookiePath, refresh)
@@ -283,29 +300,29 @@ func NewOAuthProxy(opts *Options, validator func(string) bool) *OAuthProxy {
 		AuthOnlyPath:      fmt.Sprintf("%s/auth", opts.ProxyPrefix),
 		UserInfoPath:      fmt.Sprintf("%s/userinfo", opts.ProxyPrefix),
 
-		ProxyPrefix:          opts.ProxyPrefix,
-		provider:             opts.provider,
+		ProxyPrefix:         opts.ProxyPrefix,
+		provider:            opts.provider,
 		providerNameOverride: opts.ProviderName,
-		sessionStore:         opts.sessionStore,
-		serveMux:             serveMux,
-		redirectURL:          redirectURL,
-		whitelistDomains:     opts.WhitelistDomains,
-		skipAuthRegex:        opts.SkipAuthRegex,
-		skipAuthPreflight:    opts.SkipAuthPreflight,
-		skipJwtBearerTokens:  opts.SkipJwtBearerTokens,
-		jwtBearerVerifiers:   opts.jwtBearerVerifiers,
-		compiledRegex:        opts.CompiledRegex,
-		SetXAuthRequest:      opts.SetXAuthRequest,
-		PassBasicAuth:        opts.PassBasicAuth,
-		PassUserHeaders:      opts.PassUserHeaders,
-		BasicAuthPassword:    opts.BasicAuthPassword,
-		PassAccessToken:      opts.PassAccessToken,
-		SetAuthorization:     opts.SetAuthorization,
-		PassAuthorization:    opts.PassAuthorization,
-		SkipProviderButton:   opts.SkipProviderButton,
-		templates:            loadTemplates(opts.CustomTemplatesDir),
-		Banner:               opts.Banner,
-		Footer:               opts.Footer,
+		sessionStore:        opts.sessionStore,
+		serveMuxes:          serveMuxes,
+		redirectURL:         redirectURL,
+		whitelistDomains:    whitelistDomains,
+		skipAuthRegex:       opts.SkipAuthRegex,
+		skipAuthPreflight:   opts.SkipAuthPreflight,
+		skipJwtBearerTokens: opts.SkipJwtBearerTokens,
+		jwtBearerVerifiers:  opts.jwtBearerVerifiers,
+		compiledRegex:       opts.CompiledRegex,
+		SetXAuthRequest:     opts.SetXAuthRequest,
+		PassBasicAuth:       opts.PassBasicAuth,
+		PassUserHeaders:     opts.PassUserHeaders,
+		BasicAuthPassword:   opts.BasicAuthPassword,
+		PassAccessToken:     opts.PassAccessToken,
+		SetAuthorization:    opts.SetAuthorization,
+		PassAuthorization:   opts.PassAuthorization,
+		SkipProviderButton:  opts.SkipProviderButton,
+		templates:           loadTemplates(opts.CustomTemplatesDir),
+		Banner:              opts.Banner,
+		Footer:              opts.Footer,
 	}
 }
 
@@ -504,6 +521,9 @@ func (p *OAuthProxy) GetRedirect(req *http.Request) (redirect string, err error)
 	if req.Form.Get("rd") != "" {
 		redirect = req.Form.Get("rd")
 	}
+	if len(p.serveMuxes) >= 2 && strings.HasPrefix(redirect, "/") && !strings.HasPrefix(redirect, "//") {
+		redirect = "https://" + req.Host + redirect
+	}
 	if !p.IsValidRedirect(redirect) {
 		redirect = req.URL.Path
 		if strings.HasPrefix(redirect, p.ProxyPrefix) {
@@ -566,7 +586,7 @@ func (p *OAuthProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	case path == p.PingPath:
 		p.PingPage(rw)
 	case p.IsWhitelistedRequest(req):
-		p.serveMux.ServeHTTP(rw, req)
+		p.serveRequest(rw, req)
 	case path == p.SignInPath:
 		p.SignIn(rw, req)
 	case path == p.SignOutPath:
@@ -734,6 +754,25 @@ func (p *OAuthProxy) AuthenticateOnly(rw http.ResponseWriter, req *http.Request)
 	rw.WriteHeader(http.StatusAccepted)
 }
 
+// serveRequest actually proxies the request to the upstream
+func (p *OAuthProxy) serveRequest(rw http.ResponseWriter, req *http.Request) {
+	domain := req.Host
+	if h, _, err := net.SplitHostPort(domain); err == nil {
+		domain = h
+	}
+	var serveMux http.Handler
+	if m, ok := p.serveMuxes[domain]; ok {
+		serveMux = m
+	} else {
+		serveMux = p.serveMuxes["*"]
+	}
+	if serveMux == nil {
+		p.ErrorPage(rw, 404, "Page not found", "Invalid Host")
+		return
+	}
+	serveMux.ServeHTTP(rw, req)
+}
+
 // Proxy proxies the user request if the user is authenticated else it prompts
 // them to authenticate
 func (p *OAuthProxy) Proxy(rw http.ResponseWriter, req *http.Request) {
@@ -742,7 +781,7 @@ func (p *OAuthProxy) Proxy(rw http.ResponseWriter, req *http.Request) {
 	case nil:
 		// we are authenticated
 		p.addHeadersForProxying(rw, req, session)
-		p.serveMux.ServeHTTP(rw, req)
+		p.serveRequest(rw, req)
 
 	case ErrNeedsLogin:
 		// we need to send the user to a login screen
