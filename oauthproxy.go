@@ -271,12 +271,6 @@ func NewOAuthProxy(opts *Options, validator func(string) bool) *OAuthProxy {
 		refresh = fmt.Sprintf("after %s", opts.CookieRefresh)
 	}
 
-	whitelistDomains := opts.WhitelistDomains
-	if len(serveMuxes) >= 2 && len(whitelistDomains) == 0 && opts.CookieDomain != "" {
-		// by default the cookie-domain is allowed
-		whitelistDomains = append(whitelistDomains, opts.CookieDomain)
-	}
-
 	logger.Printf("Cookie settings: name:%s secure(https):%v httponly:%v expiry:%s domain:%s path:%s refresh:%s", opts.CookieName, opts.CookieSecure, opts.CookieHTTPOnly, opts.CookieExpire, opts.CookieDomain, opts.CookiePath, refresh)
 
 	return &OAuthProxy{
@@ -306,7 +300,7 @@ func NewOAuthProxy(opts *Options, validator func(string) bool) *OAuthProxy {
 		sessionStore:        opts.sessionStore,
 		serveMuxes:          serveMuxes,
 		redirectURL:         redirectURL,
-		whitelistDomains:    whitelistDomains,
+		whitelistDomains:    opts.WhitelistDomains,
 		skipAuthRegex:       opts.SkipAuthRegex,
 		skipAuthPreflight:   opts.SkipAuthPreflight,
 		skipJwtBearerTokens: opts.SkipJwtBearerTokens,

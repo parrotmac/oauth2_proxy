@@ -135,6 +135,8 @@ other|http://127.0.0.1:8084/path/
 
 Assuming cookie domain is set to `.example.com`, the requests `test.example.com`, `other.example.com`, `other.example.com/path/` and `example.com` will all be routed to different upstreams. Any spacing around the `|` separator is ignored.
 
+When using subdomain-based routing, `whitelist_domains` must be configured to allow each subdomain (or the entire cookie domain, e.g. `.example.com`).
+
 ### Environment variables
 
 Every command line argument can be specified as an environment variable by
